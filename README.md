@@ -1,115 +1,81 @@
-# SiI3512 SATA — Mac OS 9 driver for the LaCie 130823 eSATA PCI card
+# SiI3512 SATA — a from-scratch Mac OS 9 driver for the LaCie 130823 eSATA card
 
-A native PowerPC driver (`ndrv`) — plus, for boot support, an Open Firmware FCode ROM —
-that lets a Power Mac G4 MDD **boot with**, **read drives from**, and eventually **boot
-from** a LaCie 130823 (Silicon Image **SiI3512**) eSATA PCI card under Mac OS 9.2.2.
+A native PowerPC `ndrv` for the Silicon Image **SiI3512** 2‑port SATA controller (the LaCie 130823 eSATA PCI card) on a Power Mac G4 MDD, Mac OS 9.2.2 — written from scratch with Retro68 (no CodeWarrior). The eventual goal is to **boot from** an eSATA drive; the near‑term goal is to **read and mount** drives under OS 9.
 
-Full theory of operation, feasibility verdict, and sources: **[FEASIBILITY.md](FEASIBILITY.md)**.
-Register map: **[docs/SIL3512-REGISTERS.md](docs/SIL3512-REGISTERS.md)**.
+> ### Status (July 2026): the driver core works on real hardware — the OS 9 volume *mount* is an open wall.
+> Every low‑level operation is hardware‑validated and repeatable: PCI bring‑up, SATA link, `IDENTIFY`, bus‑master DMA read **and** write, reading the partition map and HFS+ header. The one thing that doesn't work is the final handoff to OS 9's File Manager to mount the volume on the desktop — it trips a PCI memory‑decode fault we've traced but not yet defeated.
+>
+> **The full technical story, the elimination trail, and the research conclusions are in [docs/FINDINGS.md](docs/FINDINGS.md).**
 
-**Short version:** feasible. The SiI3512 is register-compatible with the SiI3112 (Linux
-`sata_sil.c` drives both from one map; 3512 differs only by one DMA-errata quirk), and the
-3112 is a proven OS 9 boot device (FirmTek SeriTek). The reason no 3512 boots OS 9 today is
-SeriTek's **device-ID software lockout** (it binds only to `0x3112`), not the silicon. We
-author our own driver keyed to `0x3512`, routing around the lockout.
+## What works — validated on real hardware, every run
 
-## Status
+- PCI enable (Command = Memory‑Space + Bus‑Master); **BAR5** mapped from `assigned-addresses` / `AAPL,address`
+- SATA COMRESET link‑up; `IDENTIFY` (model, LBA48, capacity — verified against a real drive)
+- **Bus‑master DMA reads _and_ writes**, byte‑verified against known on‑disk data (LBA48 EXT commands; usable to OS 9's 2 TB ceiling)
+- Reading the **Apple Partition Map** and the **HFS+ volume header (MDB)**
+- Installing into the Device Manager Unit Table (`InstallDriverFromMemory`); `kInitialize` scans the APM and `AddDrive`s the HFS partition
+- Partition‑offset block I/O through `DoDriverIO` (kRead/kWrite), single‑ and multi‑block
 
-- **M0 — feasibility + register reference — DONE.** See the two docs above.
-- **M1 — NDRV container shape — DONE.** Builds `SiI3512SATA.ndrv`: a CFM `ndrv` exporting
-  `TheDriverDescription` (matched to Name Registry node `pci1095,3512`) and `DoDriverIO`
-  (Initialize/Open/Close/Read/Write/Control/Status dispatch). All ops are stubs. Validated
-  against the EHCI RE tools: 2 exports, 0 imports, `cfrg` fragment `SiI3512SATA`, PowerPC.
-- **M2 — controller bring-up — DONE (compiles/links, real OS imports).**
-  `src/sil3512_regs.h` (full BAR5 map + byte-reversed MMIO helpers, per-port offset table),
-  `src/sil3512_hw.c` (OS-independent: per-port FIFO config, `RERR_ON_DMA_ACT` errata fix,
-  SATA link-up = COMRESET via SControl → poll SStatus `DET==3` → clear SError → unmask IRQ),
-  `src/sil3512_os.c` (`sil_os_initialize`: extract node from DriverInitInfo → PCI enable
-  Mem+BusMaster → map **BAR5** by matching config-register `0x24` in `assigned-addresses` →
-  `sil_hc_init`). PEF verified: imports `ExpMgrConfig*`/`RegistryPropertyGet`/`DelayForHardware`/
-  `UpTime` across 3 import libs; still 2 clean exports. **Runtime untested until M5** (same
-  posture as EHCI M2).
-- **M3 — command engine + SCSI-to-ATA (SATL) — DONE (compiles/links, real OS imports).**
-  `src/sil3512_ata.c` (OS-independent ATA engine: IDENTIFY via PIO with model/LBA48/capacity
-  parse; READ/WRITE via BMDMA against a PRD table; polled completion). `src/sil3512_os.c`
-  gains the wired PRD pool + `sil_dma_prepare`/`sil_dma_complete` (LockMemory→GetPhysical→
-  build SFF-8038i PRD entries, EOT on the last). `src/sil3512_scsi.c` registers a **SCSI
-  Manager 4.3 SIM** (`SCSIRegisterBus` + `SIMAction` UPP) and translates the core CDBs —
-  TEST UNIT READY, INQUIRY, READ CAPACITY(10), READ(10)/WRITE(10), REQUEST SENSE — to ATA
-  ops so present ports appear as SCSI targets and Drive Setup mounts them. PEF verified:
-  imports `SCSIRegisterBus`/`NewRoutineDescriptor`/`LockMemory`/`GetPhysical` (4 libs, 17
-  syms); still 2 exports. **Runtime untested until M5.**
-  - **Large-volume support (by intent).** Uses LBA48 EXT commands whenever a drive reports
-    LBA48, carrying the full 32-bit LBA — so the usable range is **up to 2 TB** (Mac OS 9's
-    own 32-bit block / HFS+ ceiling), not the 137 GB LBA28 wall. The SATL chunks READ/WRITE(10)
-    to fit the PRD table (`sil_dma_max_sectors`), so total request size is unbounded — only
-    per-command size is capped (256 sectors LBA28 / PRD-limited LBA48). Drives physically
-    > 2 TB are detected and clamped, and READ CAPACITY(10) reports `0xFFFFFFFF` per spec.
-  - Known boundaries: polled (not interrupt-driven) completion; single shared PRD table
-    (fine for the synchronous path); no > 2 TB addressing (OS-imposed, not fixable card-side);
-    ATAPI not handled.
-- **M5 — hardware bring-up — IN PROGRESS.** Probe/loader app built (`probe/`). See below.
-- **M4 — Open Firmware FCode — DEFERRED (opt-in, last).** Hardware recon (2026-07-02)
-  showed the old "card prevents boot" was a **dual-boot (OS X) artifact**, not an OS 9
-  problem: with the Leopard disk gone the MDD boots OS 9 to the desktop with the card
-  installed (ASP sees it in SLOT-3 as node `SunrichSATA3512`, `device_type ata`, vendor 1095).
-  So FCode is needed **only for goal 3 (boot *from* the card)**. The flash is a **soldered**
-  29LV040A → in-place flash only (riskier); do this only if boot-from-card is wanted.
+The driver's `kInitialize` does a full partition scan (several DMA reads + taskfile polls) and reads the volume header correctly **every boot.**
 
-## Probe / hardware validation (`probe/`)
+## The open wall — the mount read
 
-`probe/sil_probe_app.c` is a double-clickable PowerPC app that validates the driver on real
-hardware (Retro68 can't build an auto-loading PPC INIT, so an app is the validation path —
-and the safe way to make first contact). It reuses the real driver sources and runs in
-staged order, printing before each step so a hang/fault localizes itself:
+The instant OS 9's File Manager mounts the volume (`PBMountVol` → Device Manager dispatches `DoDriverIO` kRead), the first MMIO read of the ATA taskfile status register (`BAR5 + 0x87`) raises a **PowerPC access exception (bus error)**, and the *entire* BAR5 memory window goes dead — even MacsBug can't read it. Yet at that instant PCI **config space is perfectly healthy**: Command still shows Memory‑Space + Bus‑Master, BAR5 is correct, PMCSR = **D0** (not D3). So: **config alive, memory decode dead** — and only on the File‑Manager mount read, never on the byte‑identical driver‑init scan reads microseconds earlier.
 
-1. find the card in the Name Registry **by vendor/device ID 1095/3512** (not by name, since
-   the Sunrich FCode names it `SunrichSATA3512`);
-2. PCI enable + BAR5 map;
-3. first MMIO read (SYSCFG) — proves the mapping before any writes;
-4. controller bring-up (reset + SATA link-up), prints per-port SStatus / presence;
-5. IDENTIFY (model, LBA48, capacity);
-6. real DMA read of LBA 0 + partition-map signature check.
+**Ruled out** (evidence in [docs/FINDINGS.md](docs/FINDINGS.md)): our code (an older known‑good build fails identically), a literal D3 power‑down (PMCSR = D0), SATA link power management, the launch vehicle (INIT, faceless Startup‑Items app, foreground app all fail the same), timing/settle, wrong port, and physical (cold power‑cycle + reseat).
 
-v1 stops before registering a SCSI bus — it proves bring-up + IDENTIFY + the DMA read path.
-v2 adds SCSI-SIM registration so drives mount in the Finder.
+## What the research concluded
 
-```
-cmake -S probe -B probe/build \
-  -DCMAKE_TOOLCHAIN_FILE=~/Retro68-build/toolchain/powerpc-apple-macos/cmake/retroppc.toolchain.cmake
-cmake --build probe/build
-# -> probe/build/SiI3512Probe.img  (APM-wrapped, mounts on OS 9)  + .bin (MacBinary)
-```
-Attach a formatted SATA drive to card port 0 before running.
+A multi‑source deep‑dive with adversarial verification (Apple's *Designing PCI Cards and Drivers*, the SiI3512 datasheet, Linux `sata_sil.c`, and the macos9lives/68kMLA community record) found:
+
+- The decode‑death is a **PCI‑target‑level** phenomenon (the memory window being switched off), **not** power management.
+- `InstallDriverFromMemory` installs the driver but does **not open/claim** the device — so the card is never marked "in use." Every SiI3112 card that mounts reliably under OS 9 is one the OS **claims as a SCSI bus** via a SIM in the card's ROM. Leading (unproven) hypothesis: the OS closes our unclaimed card's memory window at mount time.
+- **Reliable OS 9 operation on these chips comes from FCode + a driver in the card's declaration ROM**, and the **SiI3512 specifically has zero documented OS 9 success by anyone, by any means** — only the SiI3112 is proven, and only via FirmTek's SeriTek ROM. This is unmapped territory on this exact chip.
+- Not categorically impossible: a software‑only driver *has* mounted (non‑boot) data disks on the SiI3112/3114 with no card ROM.
+
+## Where this goes next
+
+1. **Community input** — a question for the macos9lives forum is drafted at [docs/MACOS9LIVES-POST.md](docs/MACOS9LIVES-POST.md).
+2. **Software lever** — formally open/claim the device (ideally present it as a claimed SCSI bus, like the working cards) so the OS keeps its memory window alive through the mount.
+3. **The real endgame** — FCode + this NDRV in the card's 512 KB ROM, which is both the documented‑reliable answer *and* what booting *from* the eSATA drive requires. The driver core here is exactly the NDRV that would go in that ROM — so none of the work is lost.
 
 ## Build
 
-```
+Requires the [Retro68](https://github.com/autc04/Retro68) PowerPC toolchain.
+
+```sh
+# 1) The driver ndrv
 cmake -S . -B build \
   -DCMAKE_TOOLCHAIN_FILE=~/Retro68-build/toolchain/powerpc-apple-macos/cmake/retroppc.toolchain.cmake
-cmake --build build
-# -> build/SiI3512SATA.ndrv   (file type 'ndrv'; PEF in data fork, cfrg in resource fork)
+cmake --build build            # -> build/SiI3512SATA.ndrv  (+ .pef; main patched to DoDriverIO)
+
+# 2) The probe app (embeds the driver PEF, drives it step-by-step on hardware)
+cd probe && ./embed-pef.sh ../build/SiI3512SATA.pef driver_pef.r sPEF 128
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<toolchain> && cmake --build build   # -> SiI3512Probe.bin
+
+# 3) The faceless Startup-Items auto-mount app — same pattern under startup/
 ```
 
-## Validate (closed loop against the EHCI RE tools)
-
-```
-T=../usb2-feasibility/tools
-python3 $T/pefdump.py  build/SiI3512SATA.pef                          # 2 exports, 0 imports
-python3 $T/cfrgdump.py <(cat build/SiI3512SATA.ndrv/..namedfork/rsrc) # fragment "SiI3512SATA"
-```
-
-## Two hardware facts we need before M4/M5 (only you can get these)
-
-1. **Where does it hang** with the card installed? No chime / hang at gray screen (OF) /
-   hang at Happy Mac (OS)? Can you enter Open Firmware (Cmd-Opt-O-F) with the card in, and
-   does `dev /pci` + `.properties` list the node?
-2. **The card's EEPROM:** part number, size, socketed vs soldered, low-voltage writable —
-   this decides how (and whether in place) we flash the FCode+NDRV.
+Re‑embed the driver PEF (`embed-pef.sh`) whenever the driver changes. Test disk‑driver code on an **expendable** OS 9 volume — a bad boot‑time build can wedge startup.
 
 ## Layout
-- `src/sil3512_driver.c` — `TheDriverDescription` (`pci1095,3512`) + `DoDriverIO` dispatch
-- `src/sil3512_driver.exp` — exported symbols
-- `sil3512.r` — `cfrg` (fragment `SiI3512SATA`)
-- `CMakeLists.txt` — SHARED → MakePEF → Rez wrap as `ndrv`
-- `docs/SIL3512-REGISTERS.md` — register reference (from `sata_sil.c` + datasheet)
+
+- `src/` — the driver: `sil3512_driver.c` (DoDriverIO dispatch + `TheDriverDescription`), `sil3512_os.c` (OS glue: PCI/BAR/DMA/registry), `sil3512_hw.c` (bring‑up), `sil3512_ata.c` (ATA engine), `sil3512_scsi.c` (SCSI Manager 4.3 SIM), `sil3512_disk.c` (drive‑queue + block I/O), `sil3512_regs.h` (BAR5 register map)
+- `probe/` — hardware‑validation app (double‑clickable; drives the driver in staged order so a fault localizes itself)
+- `startup/` — faceless Startup‑Items auto‑mount app
+- `resident/` — 68K INIT + PPC driver resident‑install vehicle (the "true extension" path; deferred to v2.0)
+- `patch-pef-main.py` — post‑MakePEF: point the PEF `main` at `DoDriverIO` (the native‑driver shape OS 9 requires)
+- `docs/`
+  - [`FINDINGS.md`](docs/FINDINGS.md) — the mount investigation + research conclusions (**start here for the technical story**)
+  - [`SIL3512-REGISTERS.md`](docs/SIL3512-REGISTERS.md) — BAR5 register reference (from `sata_sil.c` + datasheet)
+  - [`SERITEK-SHORTCUT.md`](docs/SERITEK-SHORTCUT.md) — why patched SeriTek firmware isn't a drop‑in
+  - [`MACOS9LIVES-POST.md`](docs/MACOS9LIVES-POST.md) — the community question
+  - [`FEASIBILITY.md`](FEASIBILITY.md) — the original (July 2) feasibility analysis (historical; the premise held, the mount wall is newer)
+
+## Status of the goals
+
+- **Goal 1 — boot the Mac with the card installed** — satisfied for OS 9 (the old "card prevents boot" was a dual‑boot/OS X artifact; OS 9 boots to the desktop with the card in).
+- **Goal 2 — read/mount drives under OS 9** — driver reads perfectly; the **mount** is the open wall (above).
+- **Goal 3 — boot *from* the card** — needs FCode + this NDRV in the card's soldered 512 KB ROM (in‑place flash only). This is also the research‑backed path to a *reliable* mount.
+
+*Work in progress. The hard 90% — a working from‑scratch SiI3512 driver on OS 9 — is done; the last mile (the OS mount) is genuinely stubborn and is the same wall that blocks every non‑ROM approach on this chip.*
