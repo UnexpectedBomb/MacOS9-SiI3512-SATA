@@ -1,0 +1,9 @@
+# Build output (CMake / Retro68 — every build/ subtree, all generated binaries)
+build/
+
+# Object files
+*.o
+*.obj
+
+# macOS cruft
+.DS_Store
