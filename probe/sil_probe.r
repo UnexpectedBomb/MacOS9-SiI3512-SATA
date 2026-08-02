@@ -12,6 +12,6 @@ resource 'SIZE' (-1) {
 };
 
 resource 'vers' (1, "SiI3512Probe") {
-    0x57, 0x00, development, 0x57, verUS,
-    "57.0", "57.0 SiI3512 probe baseline re-test (foreground; current NM-gated driver)"
+    0x70, 0x00, development, 0x70, verUS,
+    "70.0", "70.0 SiI3512 driver-binding DIFF: CLAIMED (driver-ref) vs InstallDriverFromMemory reference; no open, no mount"
 };

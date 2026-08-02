@@ -65,6 +65,82 @@ static void DWrite(const unsigned char *pstr)
 }
 static void PApp(Str255 d, const char *s) { short l=d[0]; while(*s&&l<255)d[++l]=(unsigned char)*s++; d[0]=(unsigned char)l; }
 static void PAppN(Str255 d, long v) { Str255 n; short i; NumToString(v,n); for(i=1;i<=n[0]&&d[0]<255;i++)d[++d[0]]=n[i]; }
+
+/* ---- v58 DIAGNOSTIC: probe the BAR's CPU page mapping via GetPageInformation --------------
+ * The exhaustive ROM RE concluded the mount-read bus-error is our unclaimed card's BAR logical
+ * page being unmapped by the OS (the Uni-N config path stays fine, hence "config alive / decode
+ * dead"). GetPageInformation QUERIES the page tables and never faults, so this is crash-safe.
+ * We log it for the kInitialize scan reads (mapping present = baseline) AND the File-Manager
+ * mount reads; if the mount read shows the page GONE while the scan reads showed it PRESENT,
+ * the teardown is confirmed. GetPageInformation is exported by DriverServicesLib but absent
+ * from Retro68's headers, so it is hand-declared per Universal Interfaces 3.4.1 (all args are
+ * 4-byte => built-in types match the CFM ABI; kCurrentAddressSpaceID = -1, version = 1). */
+/* v62: this whole page/SCR-link DIAGNOSTIC (v58-v61) is gated OFF for the PRODUCTION driver
+ * that the ROM-claim candidate ships. Production disk_rw does the REAL mount read (MMIO);
+ * only the diagnostic build (-DSIL_DIAG_PAGEPROBE=1) skips the mount MMIO and probes instead. */
+#ifndef SIL_DIAG_PAGEPROBE
+#define SIL_DIAG_PAGEPROBE 0
+#endif
+#if SIL_DIAG_PAGEPROBE
+static void PAppHex(Str255 d, unsigned long v){ static const char h[]="0123456789ABCDEF"; int i;
+    for(i=28;i>=0;i-=4) if(d[0]<255) d[++d[0]]=(unsigned char)h[(v>>i)&0xF]; }
+static short gPLog=0, gPVol=0;
+static void PLog(Str255 s){ long n, one=1, d; char cr='\r'; FSSpec sp;
+    if(!gPLog){ if(FindFolder(kOnSystemDisk,kSystemFolderType,kDontCreateFolder,&gPVol,&d)!=noErr)return;
+        if(FSMakeFSSpec(gPVol,d,"\pSiI3512 PageInfo Log",&sp)==noErr)FSpDelete(&sp);
+        if(FSpCreate(&sp,'ttxt','TEXT',smSystemScript)!=noErr)return;
+        if(FSpOpenDF(&sp,fsRdWrPerm,&gPLog)!=noErr){gPLog=0;return;} }
+    if(gPLog){ n=s[0]; FSWrite(gPLog,&n,(Ptr)&s[1]); FSWrite(gPLog,&one,(Ptr)&cr); FlushVol(NULL,gPVol);} }
+/* v59/v60: page-probe + SATA-link stash. SAME principle as the v44 Control/Status ring below —
+ * pure memory + config-cycle + SAFE-SCR reads only, so it is safe to record from INSIDE the
+ * PBMountVol read. The v58 freeze was sil_diag_page calling PLog->FSWrite at mount time,
+ * re-entering the File Manager during PBMountVol = the v47 re-entrant-FM hang (DWrite honors
+ * gLogQuiet; PLog did not). The verdict is stashed here and the app dumps it via Gestalt('SiPg')
+ * afterward, at task level. Field order MUST match the app's PgRec.
+ * v60: v59 proved the BAR page is MAPPED at mount (the fault is NOT a page teardown), so we now
+ * also capture the SAFE SCR link registers (bar5+0x100.., proven to respond at mount) + a
+ * pure-config snapshot, to reveal WHETHER the SATA link is up at the mount read. We NEVER touch
+ * the taskfile (bar5+0x80..0x9F) — that is the region that bus-errors. */
+typedef struct { UInt32 magic, seq, phase, bar, st, cnt, fl, present, lba,
+                 sstatus, serror, scontrol, cfgCmd, cfgBar, pmcsr; } SilPageRec;
+static SilPageRec gPageRec;
+/* Query bar5's page mapping + the SAFE SCR link state. Returns 1 if the OS reports the page
+ * present. Always stashes to gPageRec (memory, FM-safe); logs to the flushed 'SiI3512 PageInfo
+ * Log' ONLY for scan reads (task level) — NEVER at mount (would FSWrite-re-enter the File
+ * Manager). GetPageInformation + PageInformation come from DriverServices.h. */
+static int sil_diag_page(int mountPhase, int port, UInt32 lba){
+    UInt8 pibuf[64]; PageInformation *pi = (PageInformation *)pibuf;
+    OSStatus st; int present; long j; Str255 L; UInt32 cnt, flags0, ss;
+    for(j=0;j<(long)sizeof(pibuf);j++) pibuf[j]=0;
+    st = GetPageInformation(kCurrentAddressSpaceID, (ConstLogicalAddress)gSil.bar5, 0x88UL,
+                            kPageInformationVersion, pi);
+    cnt = (UInt32)pi->count; flags0 = (UInt32)pi->information[0];
+    present = (st==0 && cnt>=1);
+    /* SAFE captures only: SCR link regs (0x100 region) + pure-config snapshot. NO taskfile. */
+    ss = sil_scr_read(&gSil, port, SIL_SCR_STATUS);
+    sil_pci_snapshot();
+    gPageRec.seq++;      gPageRec.phase   = (UInt32)mountPhase;
+    gPageRec.bar = (UInt32)gSil.bar5;  gPageRec.st = (UInt32)st;
+    gPageRec.cnt = cnt;  gPageRec.fl = flags0;
+    gPageRec.present = (UInt32)present; gPageRec.lba = lba;
+    gPageRec.sstatus  = ss;
+    gPageRec.serror   = sil_scr_read(&gSil, port, SIL_SCR_ERROR);
+    gPageRec.scontrol = sil_scr_read(&gSil, port, SIL_SCR_CONTROL);
+    gPageRec.cfgCmd   = gSil.snapCmd;
+    gPageRec.cfgBar   = gSil.snapBar;
+    gPageRec.pmcsr    = gSil.snapPmcsr;
+    if (!mountPhase) {   /* scan read: task level => FSWrite is safe. mount read: stash only. */
+        L[0]=0; PApp(L,"scan  bar="); PAppHex(L,(unsigned long)gSil.bar5);
+        PApp(L," st=");  PAppHex(L,(unsigned long)st);
+        PApp(L," cnt="); PAppHex(L,(unsigned long)cnt);
+        PApp(L," ss=");  PAppHex(L,(unsigned long)ss);
+        PApp(L," lba="); PAppN(L,(long)lba);
+        PApp(L, present ? " PRESENT" : " *UNMAPPED*");
+        PLog(L);
+    }
+    return present;
+}
+#endif /* SIL_DIAG_PAGEPROBE */
 static void DS(const char *s) { Str255 L; L[0]=0; PApp(L,s); DWrite(L); }
 static void DN(const char *s, long v) { Str255 L; L[0]=0; PApp(L,s); PAppN(L,v); DWrite(L); }
 /* hex + ascii dump of n bytes (n<=64) after a label — for on-disk signatures */
@@ -194,6 +270,20 @@ static void cslog(short kind, ParmBlkPtr pb)   /* kind: 1 = Status, 2 = Control 
     gCsLog.count++;
 }
 
+/* v67: kRead-path stage trace. Memory-only (pushes into the Si3L ring the app already dumps),
+ * so it is hang-safe at mount time where DWrite/FSWrite is suppressed by gLogQuiet. gIoStage
+ * records how far disk_rw got; iolog() records one entry per disk_io call as csCode = 700+stage
+ * (709 = success), p0 = lba — so a failing File-Manager mount read shows WHERE disk_rw returned 0
+ * (703 = sil_dma_prepare failed, 704 = sil_ata_rw_dma failed). */
+static short gIoStage = 0;
+static void iolog(UInt32 lba, short code)
+{
+    SilCsRec *r = &gCsLog.recs[gCsLog.count & (SIL_CS_CAP - 1)];
+    r->kind = 2; r->csCode = code; r->ioVRefNum = gIoStage; r->pad = 0;
+    r->p0 = (long)lba; r->p1 = 0;
+    gCsLog.count++;
+}
+
 /* ---- drive table (drive# -> port, partition start) ---- */
 typedef struct { UInt8 inUse, port; short driveNum; UInt32 partStart, partCount; } sil_drive;
 static sil_drive gDrives[SIL3512_N_PORTS * 2];
@@ -239,22 +329,35 @@ static int disk_rw(int port, UInt32 lba, UInt32 nblocks, UInt8 *buf, int isWrite
     UInt32 cmdCap = gSil.port[port].lba48 ? 65536UL : 256UL;
     UInt32 chunk  = (prdCap < cmdCap) ? prdCap : cmdCap;
     UInt32 bchunk = sizeof(gBounce) / 512UL;
+    gIoStage = 1;                /* v67: entered disk_rw */
+#if SIL_DIAG_PAGEPROBE
+    /* DIAGNOSTIC build ONLY: probe the BAR mapping + SCR link, then at mount time (gLogQuiet==1)
+     * skip ALL MMIO so we never bus-error (the mount read gets a graceful ioErr); scan reads
+     * still do the real transfer below. PRODUCTION (SIL_DIAG_PAGEPROBE=0) does the REAL mount
+     * read — which is the whole point of the ROM-claim candidate. */
+    (void)sil_diag_page(gLogQuiet, port, lba);
+    if (gLogQuiet) return 0;
+#endif
     (void)sil_pci_reassert();   /* v55: wake to D0 + (on the wake transition) re-init the controller before MMIO.
                                  * ROOT CAUSE (v54): Audio CD Access power-downs our card to D3 (pmCap@0x60),
                                  * which kills decode (v51-v53 bus-errored) AND resets the SATA controller.
                                  * v54's D0 wake stopped the crash but reads came back garbage (badMDBErr -60).
                                  * v55 re-establishes the link (sil_hc_init) after the wake so reads work. */
+    gIoStage = 2;                /* v67: passed sil_pci_reassert */
     if (chunk > bchunk) chunk = bchunk;
     while (nblocks > 0) {
         UInt32 n = (nblocks < chunk) ? nblocks : chunk;
         UInt32 bytes = n * 512UL, prd; void *ck;
         if (isWrite) BlockMoveData(buf, gBounce, (long)bytes);       /* FM buffer -> staging */
+        gIoStage = 3;            /* v67: about to sil_dma_prepare */
         if (!sil_dma_prepare(gBounce, bytes, isWrite, &prd, &ck)) return 0;
+        gIoStage = 4;            /* v67: about to sil_ata_rw_dma */
         if (!sil_ata_rw_dma(&gSil, port, lba, (UInt16)n, prd, isWrite)) { sil_dma_complete(ck, bytes); return 0; }
         sil_dma_complete(ck, bytes);
         if (!isWrite) BlockMoveData(gBounce, buf, (long)bytes);      /* staging -> FM buffer */
         lba += n; buf += bytes; nblocks -= n;
     }
+    gIoStage = 9;                /* v67: completed OK */
     return 1;
 }
 
@@ -274,7 +377,13 @@ OSStatus sil_disk_scan_and_add(short refNum)
     /* v44: pure-memory Control/Status probe ring, published via Gestalt for the app to dump. */
     gCsLog.magic = 0x5369334cUL /* 'Si3L' */; gCsLog.count = 0; gCsLog.cap = SIL_CS_CAP;
     (void)NewGestaltValue('Si3L', (long)&gCsLog);
-    DN("=== SiI3512 driver v57/M6.2c: disk init (APM/HFS, bounced R/W, pre-mount PCI recovery+diag, deferred auto-mount NM), refNum=", refNum);
+#if SIL_DIAG_PAGEPROBE
+    gPageRec.magic = 0x53695067UL /* 'SiPg' */; gPageRec.seq = 0;   /* mount-verdict stash */
+    (void)NewGestaltValue('SiPg', (long)&gPageRec);
+    DN("=== SiI3512 driver v61 DIAGNOSTIC: page/SCR-link probe (verdict -> Gestalt 'SiPg'), refNum=", refNum);
+#else
+    DN("=== SiI3512 driver v69 ROM-CLAIM (bring-up in kOpen; node SunrichSATA3512, expert-control 0x05, REAL mount I/O), refNum=", refNum);
+#endif
     DHex("  bar5(logical)", (const UInt8 *)&gSil.bar5, 4);
     DHex("  bar5cfg(0x24) ", (const UInt8 *)&gSil.bar5cfg, 4);
     DHex("  pmCap(cfg off)", (const UInt8 *)&gSil.pmCap, 1);
@@ -385,6 +494,7 @@ static OSStatus disk_io(void *pbv, int isWrite)
         DWrite(L);
     }
     ok = disk_rw(d->port, lba, nblk, (UInt8 *)pb->ioParam.ioBuffer, isWrite);
+    iolog(lba, (short)(700 + gIoStage));   /* v67: trace outcome/stage of each FM-routed op (hang-safe ring) */
     pb->ioParam.ioActCount = ok ? (long)(nblk * 512UL) : 0;
     if (!ok)          DS(isWrite ? "kW< FAIL" : "kR< FAIL");   /* always log failures */
     else if (doLog)   DHex(isWrite ? "kW< OK " : "kR< OK ", (UInt8 *)pb->ioParam.ioBuffer, 16);

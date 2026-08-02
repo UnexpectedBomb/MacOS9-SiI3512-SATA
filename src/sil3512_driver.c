@@ -7,10 +7,14 @@
  * standalone PCI device driver:
  *
  *   TheDriverDescription — CFM driver descriptor. Its nameInfoStr is matched
- *                          by the Name Registry against the card's PCI node
- *                          "pci1095,3512" (vendor 0x1095 Silicon Image,
- *                          device 0x3512). This is what routes THIS card to
- *                          THIS driver and sidesteps SeriTek's 0x3112-only
+ *                          by the Name Registry against the card's node name.
+ *                          v61 probe CONFIRMED the node's `name` AND `compatible`
+ *                          are BOTH "SunrichSATA3512" (the Sunrich FCode's name;
+ *                          there is NO "pci1095,3512" string on the node), so
+ *                          nameInfoStr = "SunrichSATA3512" — mirroring how the ROM
+ *                          ATA controllers set nameInfoStr == their node name. This
+ *                          routes THIS card (device_type "ata", vendor 0x1095 device
+ *                          0x3512) to THIS driver, sidestepping SeriTek's 0x3112-only
  *                          device-ID lockout (see ../FEASIBILITY.md).
  *   DoDriverIO           — the unified native-driver entry point. The I/O
  *                          system dispatches Initialize/Open/Close/Read/Write/
@@ -56,7 +60,7 @@ typedef struct { OSType category; OSType type; NumVersion version; } SilServiceI
 typedef struct {
     OSType     sig;             /* 'mtej' kTheDescriptionSignature            */
     UInt32     descVersion;     /* 0 kInitialDriverDescriptor                 */
-    Str31      nameInfoStr;     /* "pci1095,3512"  <- match THIS card         */
+    Str31      nameInfoStr;     /* "SunrichSATA3512" = the card's node name    */
     NumVersion typeVersion;     /* driver version                             */
     UInt32     driverRuntime;   /* runtime flags                              */
     Str31      driverName;      /* "SiI3512SATA"                              */
@@ -69,15 +73,22 @@ typedef struct {
  * A native driver's description MUST declare at least one service (per
  * DriverFamilyMatching.h: "The List of Services (at least one)") — omitting it
  * makes VerifyFragmentAsDriver reject the fragment. We declare a generic native
- * driver ('ndrv') of block-storage type ('blok'). driverRuntime keeps
- * kDriverIsLoadedUponDiscovery|kDriverIsOpenedUponLoad (0x03).
+ * driver ('ndrv') of block-storage type ('blok'). driverRuntime is
+ * kDriverIsLoadedUponDiscovery|kDriverIsUnderExpertControl (0x05) — the SAME value as
+ * the working ROM ATA controller cmd646-ata. kInitialize (bring-up) still runs at load
+ * via LoadedUponDiscovery; UnderExpertControl (0x04) is the "OS manages this device"
+ * status the research tied to keeping the card's mapping/power alive (+ ACA coexist).
+ * v65 DROPPED kDriverIsOpenedUponLoad (0x02): auto-opening our driver at boot was the
+ * prime suspect in the v64 near-desktop crash (the OS brought a not-yet-functional
+ * driver fully online into the SystemTask machinery and then called a garbage UPP).
+ * With 0x05 the expert opens the driver when it needs it, not automatically at load.
  */
 SilDriverDescription TheDriverDescription = {
     FOURCC('m','t','e','j'),
     0,
-    { 12, "pci1095,3512" },
+    { 15, "SunrichSATA3512" },
     { 1, 0, 0x80 /*final*/, 0 },
-    0x00000003UL,
+    0x00000005UL,   /* v65: LoadedUponDiscovery|UnderExpertControl (dropped OpenedUponLoad 0x02); see note */
     { 11, "SiI3512SATA" },
     { 0,0,0,0,0,0,0,0 },
     1,
@@ -125,6 +136,8 @@ enum {
  * registered (M3); until then they decline.
  */
 extern OSStatus sil_os_initialize(void *initInfo);
+extern OSStatus sil_os_init_stash(void *initInfo);   /* v69: kInitialize stash-only (boot-safe) */
+extern OSStatus sil_os_open_bringup(void);           /* v69: kOpen deferred bring-up + AddDrive */
 extern OSStatus sil_os_open(void);
 extern OSStatus sil_os_close(void);
 extern OSStatus sil_os_finalize(void);
@@ -153,6 +166,11 @@ extern short IOCommandIsComplete(IOCommandID theID, short theResult);
  * PBMountVol hung because we returned without ever calling IOCommandIsComplete,
  * so its ioResult never cleared. This epilogue is the fix.
  */
+/* v69 ROM-CLAIM DISPATCH: kInitialize (runs at EARLY boot when claimed) only STASHES the init
+ * info + returns noErr (boot-safe -- what let v65 boot to a stable desktop); the hardware bring-up
+ * + AddDrive is DEFERRED to kOpen (sil_os_open_bringup), which fires POST-boot when an app
+ * OpenInstalledDriver's the claimed driver -- a settled context (timers/DMA up). The old
+ * SIL_MINIMAL_INIT diagnostic gate (v64/v65) is superseded by this split. */
 OSStatus DoDriverIO(AddressSpaceID spaceID, IOCommandID cmdID,
                     IOCommandContents contents, IOCommandCode code,
                     IOCommandKind kind)
@@ -161,12 +179,10 @@ OSStatus DoDriverIO(AddressSpaceID spaceID, IOCommandID cmdID,
     (void)spaceID;
     sil_disk_logcmd((unsigned long)code, (unsigned long)kind);   /* v31: trace every command */
     switch (code) {
-        case kInitializeCommand: err = sil_os_initialize((void *)contents); break;
-        /* Disk-driver model: Open just succeeds (drives are AddDrive'd in
-         * Initialize, M6.1b); we no longer register a SCSI bus here. Accept the
-         * Control/Status queries the Device Manager issues during open/install
-         * so the install completes cleanly (was returning kSil3512Unimpl=-6650). */
-        case kOpenCommand:       err = noErr; break;
+        case kInitializeCommand: err = sil_os_init_stash((void *)contents); break;  /* v69: stash only (boot-safe) */
+        /* v69: kOpen does the deferred bring-up + AddDrive (post-boot, app-triggered via
+         * OpenInstalledDriver on the claimed driver). Guarded to run once. */
+        case kOpenCommand:       err = sil_os_open_bringup(); break;
         case kCloseCommand:      err = noErr; break;
         case kFinalizeCommand:   err = sil_os_finalize(); break;
         case kControlCommand:    err = sil_disk_control((void *)contents); break;

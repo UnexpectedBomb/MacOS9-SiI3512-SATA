@@ -48,6 +48,8 @@ extern sil_softc gSil;
 
 /* --- sil3512_os.c (OS 9 glue) --- */
 OSStatus sil_os_initialize(void *initInfo);   /* from DoDriverIO kInitializeCommand */
+OSStatus sil_os_init_stash(void *initInfo);   /* v69: kInitialize -- stash init info only (boot-safe) */
+OSStatus sil_os_open_bringup(void);           /* v69: kOpen -- deferred bring-up + AddDrive (post-boot) */
 OSStatus sil_bringup(void *regEntryID);       /* enable+map+PRD (no reset); RegEntryIDPtr */
 OSStatus sil_find_node(void *outRegEntryID);  /* find node by vendor/device ID; RegEntryIDPtr */
 OSStatus sil_os_open(void);

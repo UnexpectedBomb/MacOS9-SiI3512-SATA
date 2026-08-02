@@ -433,6 +433,37 @@ OSStatus sil_os_initialize(void *initInfo)
     return sil_disk_scan_and_add(info->refNum);  /* AddDrive HFS partitions */
 }
 
+/* v69: ROM-CLAIM model. When claimed from the ROM parcel, kInitialize runs at EARLY boot, where
+ * the full bring-up hangs (v63: Delay()/DMA before the timer + DMA services are up). So the ROM
+ * driver splits it: kInitialize only STASHES the DriverInitInfo (node + refNum) and returns noErr
+ * (boot-safe -- no hardware, no Delay, no DMA -- this is what let v65 boot to a stable desktop);
+ * the real bring-up + AddDrive runs in kOpen (sil_os_open_bringup), which fires POST-boot when an
+ * app OpenInstalledDriver's the claimed driver -- a settled, timers-up, DMA-up context. */
+static RegEntryID gInitNode;
+static short      gInitRefNum = 0;
+static int        gBroughtUp  = 0;
+OSStatus sil_os_init_stash(void *initInfo)
+{
+    DriverInitInfoPtr info = (DriverInitInfoPtr)initInfo;
+    if (info == NULL) return paramErr;
+    gInitNode   = info->deviceEntry;
+    gInitRefNum = info->refNum;
+    gBroughtUp  = 0;
+    return noErr;
+}
+OSStatus sil_os_open_bringup(void)
+{
+    OSStatus err;
+    if (gBroughtUp) return noErr;                 /* bring up + AddDrive exactly once */
+    err = sil_bringup(&gInitNode);                /* enable + map + PRD pool */
+    if (err != noErr) return err;
+    err = sil_hc_init(&gSil);                     /* reset + SATA link-up    */
+    if (err != noErr) return err;
+    err = sil_disk_scan_and_add(gInitRefNum);     /* AddDrive HFS partitions */
+    if (err == noErr) gBroughtUp = 1;
+    return err;
+}
+
 /* ---- M6.2a: boot-time self-install (no app) ---------------------------------------- *
  * The shippable "no app" path. The 68K INIT (resident/esata_init.c) loads our PEF
  * ('PPC ' 128) as a transient fragment and Mixed-Mode-calls InstallMe; InstallMe copies
