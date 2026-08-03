@@ -24,13 +24,21 @@
 import sys, os, shutil, fnmatch
 from os import path
 
-TBXI_PATCHES = '/Users/chrissell/Developer/rom-tools/tbxi-patches'
+# Elliot Nunn's tbxi-patches directory (contains patch_common). Override with $TBXI_PATCHES.
+TBXI_PATCHES = os.environ.get('TBXI_PATCHES', os.path.expanduser('~/rom-tools/tbxi-patches'))
+if not path.isdir(TBXI_PATCHES):
+    raise SystemExit(
+        "tbxi-patches not found at %r.\n"
+        "Set $TBXI_PATCHES to Elliot Nunn's Mac OS ROM toolchain 'tbxi-patches' directory."
+        % TBXI_PATCHES)
 sys.path.insert(0, TBXI_PATCHES)
 import patch_common
 
-# ---- our hardware-proven driver core (the exact NDRV the ROM route reuses) ----
-OUR_PEF  = '/Users/chrissell/Developer/claude-os9/esata-sil3512/build/SiI3512SATA.pef'
-PEF_NAME = 'SiI3512SATA.pef'          # referenced uncompressed, like RockHopper2
+# ---- the hardware-proven driver core (the exact NDRV the ROM route reuses) ----
+# Defaults to the locally built driver; override with $SIL_PEF.
+_HERE    = path.dirname(path.abspath(__file__))
+OUR_PEF  = os.environ.get('SIL_PEF', path.join(_HERE, '..', 'build', 'SiI3512SATA.pef'))
+PEF_NAME = 'SiI3512SATA.pef'          # referenced uncompressed, like the stock controller ndrvs
 
 # ---- device-node MATCH string — LOCKED by the v61 node-probe (2026-07-23) -------
 # The v61 Name Registry dump CONFIRMED the card's node has name == compatible ==
