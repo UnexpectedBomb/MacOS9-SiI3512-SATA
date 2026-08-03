@@ -1,6 +1,6 @@
 # SiI3512 register reference (for the OS 9 NDRV)
 
-Programming model shared with the SiI3112/3114 — verified from Linux
+Programming model shared with the SiI3112/3114, verified from Linux
 `drivers/ata/sata_sil.c` (one driver, IDs 3112/3512/3114) and the SiI3512 datasheet
 (bitsavers SiI-DS-0102-D). All MMIO lives in the **BAR5** memory window. This card is a
 2-port part → ports 0 and 1 only. Registers are **little-endian**; on the big-endian
@@ -10,9 +10,9 @@ PPC use byte-reversing access (`lwbrx`/`stwbrx`, as in `../usb2-ehci/src/ehci_re
 - Vendor `0x1095` (Silicon Image / CMD), Device `0x3512`.
 - BARs: BAR0–4 are the legacy IDE-style taskfile/BMDMA decode; **BAR5** is the unified
   memory-mapped register block we use. Enable via PCI Command = `0x0006`
-  (MemorySpace | BusMaster) — `ExpMgrConfigWriteWord(node, 0x04, 0x0006)`.
+  (MemorySpace | BusMaster), `ExpMgrConfigWriteWord(node, 0x04, 0x0006)`.
 - Class: mass-storage. (Confirm the exact class-code the LaCie ROM presents when we read
-  the node's properties on hardware — it affects the OF node name / our match string.)
+  the node's properties on hardware, it affects the OF node name / our match string.)
 
 ## BAR5 offsets (bytes)
 
@@ -29,7 +29,7 @@ PPC use byte-reversing access (`lwbrx`/`stwbrx`, as in `../usb2-ehci/src/ehci_re
 | SIEN (SATA IRQ en)  | 0x148  | 0x1C8  | |
 | SFIS config         | 0x14C  | 0x1CC  | |
 
-(Ports 2/3 exist on the 3114 at 0x280/0x2C0 etc. — not present on this 2-port 3512.)
+(Ports 2/3 exist on the 3114 at 0x280/0x2C0 etc., not present on this 2-port 3512.)
 
 ### Global
 | Register     | Offset | Notes |
@@ -37,7 +37,7 @@ PPC use byte-reversing access (`lwbrx`/`stwbrx`, as in `../usb2-ehci/src/ehci_re
 | SIL_SYSCFG   | 0x48   | per-port IDE interrupt mask bits at 22–25 |
 
 ### SCR sub-registers (relative to each port's SCR base)
-Standard SATA superset ordering: `SStatus` (link/PHY status — DET field = device present),
+Standard SATA superset ordering: `SStatus` (link/PHY status, DET field = device present),
 `SError`, `SControl` (DET/SPD/IPM). Bring-up sets SControl to trigger COMRESET, waits for
 `SStatus.DET == 3` (device present + PHY ready), then clears `SError`.
 

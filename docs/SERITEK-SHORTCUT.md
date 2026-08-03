@@ -11,7 +11,7 @@ plus it surfaces one do-it-regardless action: **dump the LaCie flash first.**
 
 ## Findings
 
-### 1. The soldered flash is NOT a barrier — flashrom `satasii` handles the SiI3512 in place
+### 1. The soldered flash is NOT a barrier, flashrom `satasii` handles the SiI3512 in place
 flashrom's `satasii` programmer talks to the flash **through the SATA controller**, so the
 soldered 29LV040A needs no desoldering:
 ```
@@ -19,13 +19,13 @@ flashrom --programmer satasii -r lacie-backup.bin     # read/backup (do this fir
 flashrom --programmer satasii -w newimage.bin         # write
 ```
 Runs from a **PC with a legacy PCI slot booted to FreeDOS** (USB stick). This is the enabling
-logistics fact — and it works regardless of which goal-3 path we take. (Logistics need: a
+logistics fact, and it works regardless of which goal-3 path we take. (Logistics need: a
 PCI-slot PC + FreeDOS. The Mac-side SeriTek1S2Flasher exists too but likely gates on card type.)
 
 ### 2. Unmodified SeriTek firmware categorically won't run on a 3512
-The SeriTek ROM **requires the PCI device ID to read as `0x3112`** to execute — evidenced by
+The SeriTek ROM **requires the PCI device ID to read as `0x3112`** to execute, evidenced by
 the Adaptec-card trick ("remove the 24C02 EEPROM to restore 3112 IDs so the SeriTek ROM will
-run"). The SiI3512's device ID is **hardwired `0x3512`** in silicon — no strap/EEPROM trick can
+run"). The SiI3512's device ID is **hardwired `0x3512`** in silicon, no strap/EEPROM trick can
 make it read 3112. So the ROM's ID checks *must* be patched. This is exactly the community's
 "flashed unmodified SeriTek onto a 3512 → won't boot" result.
 
@@ -41,7 +41,7 @@ SeriTek's driver is tuned for the **SiI3112**. The **SiI3512 needs the `RERR_ON_
 errata workaround** (assert R_ERR on DMA-activate FIS) that the 3112 driver does **not** apply
 (verified from Linux `sata_sil.c`). A device-ID-patched-but-otherwise-3112 NDRV could therefore
 **boot yet be unreliable** under DMA load on the 3512. **Our own NDRV (M2) already handles this
-quirk** — so we keep ours for runtime no matter what.
+quirk**, so we keep ours for runtime no matter what.
 
 ### 5. External corroboration of our reframing
 A forum user with a **SiI3512 card "ticking along just fine in my MDD"** (declining to reflash
@@ -52,10 +52,10 @@ just have no driver / no drive access. Good outside validation.
 
 **Do not flash patched SeriTek firmware wholesale.** Instead, when we reach goal 3:
 
-1. **Dump the LaCie card's existing 512 KB flash with flashrom** (`-r`) — *this is the one
+1. **Dump the LaCie card's existing 512 KB flash with flashrom** (`-r`), *this is the one
    high-value, low-risk action, and we do it regardless of path.* It gives us:
    - a safety backup (mandatory before any write to a soldered part), and
-   - the existing **Sunrich FCode** to study — it already creates the working `ata` node
+   - the existing **Sunrich FCode** to study, it already creates the working `ata` node
      (per ASP), so it may already contain boot/`block` bits we can build on.
 2. **Write our own FCode**, keyed to `3512` and matched to our NDRV, using the dumped Sunrich
    FCode **and** the SeriTek FCode as references (blueprints, not binaries).
@@ -69,16 +69,16 @@ flashrom recipe become our **goal-3 toolkit**, and the SeriTek/Sunrich FCode is 
 reference for authoring ours.
 
 ## Assets to grab when we start goal 3
-- `1s2-patched-compressed-rom.zip` (dosdude1) + full 512K ROM — reference FCode/NDRV layout
-- `lzss-fcode-new.4th` — LZSS (de)compression for the ROM's FCode/NDRV
-- `flashrom` (satasii programmer) on FreeDOS — dump + write the LaCie flash in place
+- `1s2-patched-compressed-rom.zip` (dosdude1) + full 512K ROM, reference FCode/NDRV layout
+- `lzss-fcode-new.4th`, LZSS (de)compression for the ROM's FCode/NDRV
+- `flashrom` (satasii programmer) on FreeDOS, dump + write the LaCie flash in place
 - Hosted on the 68kMLA / TinkerDifferent SiI3112 flashing threads (forum attachments)
 
 ## Sources
-- flashrom `satasii` reads/writes SiI3512 in place; FreeDOS recipe —
+- flashrom `satasii` reads/writes SiI3512 in place; FreeDOS recipe in the
   [MacRumors SIL3112 flashing guide](https://forums.macrumors.com/threads/guide-to-flashing-pc-sil3112-sata-cards-for-mac.1690231/),
   [flashrom manual](https://flashrom.org/classic_cli_manpage.html)
 - SeriTek ROM requires 3112 ID (Adaptec 24C02 trick); checks in FCode + NDRV; LZSS; tools;
-  3512 patch untried, 3114 cross-chip failed —
+  3512 patch untried, 3114 cross-chip failed,
   [TinkerDifferent 2025 flashing guide](https://tinkerdifferent.com/threads/flashing-the-silicon-image-sil3112-to-work-in-macs-2025-edition.1494/)
-- 3512 vs 3112 errata (`RERR_ON_DMA_ACT`) — Linux [`sata_sil.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/ata/sata_sil.c)
+- 3512 vs 3112 errata (`RERR_ON_DMA_ACT`), Linux [`sata_sil.c`](https://raw.githubusercontent.com/torvalds/linux/master/drivers/ata/sata_sil.c)

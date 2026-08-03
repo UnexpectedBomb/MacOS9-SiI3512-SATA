@@ -1,6 +1,6 @@
-# Mac OS 9 driver for the LaCie 130823 eSATA PCI card — feasibility & theory
+# Mac OS 9 driver for the LaCie 130823 eSATA PCI card, feasibility & theory
 
-**Card:** LaCie 130823 "2-Port eSATA PCI" — chipset **Silicon Image SiI3512**
+**Card:** LaCie 130823 "2-Port eSATA PCI", chipset **Silicon Image SiI3512**
 ("SATALink", SteelVine family), PCI vendor `0x1095`, device `0x3512`, 32-bit PCI.
 **Target machine:** Power Mac G4 MDD (New World, Open Firmware 3, boots Mac OS 9.2.2).
 
@@ -28,13 +28,13 @@ also has a hardware prerequisite (see "What only hardware can tell us").
 
 ## Feasibility verdict: YES, with one honest caveat
 
-### Why it's feasible — register compatibility is confirmed
+### Why it's feasible, register compatibility is confirmed
 
 The SiI3512 is **not** a new programming model. Its datasheet is subtitled *"Based on
 the proven architecture of the industry-leading SiI 3112."* The decisive proof is
 Linux: a **single** driver, `drivers/ata/sata_sil.c`, drives `0x3112`, `0x3512`, and
 `0x3114` off an **identical** register map. The only 3512-specific difference is one
-errata quirk flag (`SIL_FLAG_RERR_ON_DMA_ACT` — assert R_ERR on DMA-activate FIS).
+errata quirk flag (`SIL_FLAG_RERR_ON_DMA_ACT`, assert R_ERR on DMA-activate FIS).
 Taskfile, BMDMA/scatter-gather, and SATA SControl/SStatus offsets are all shared.
 See `docs/SIL3512-REGISTERS.md`.
 
@@ -42,18 +42,18 @@ The **SiI3112 is a proven OS 9 boot device**: FirmTek SeriTek/1S2 (and Sonnet Te
 SATA) cards use it, and dosdude1's community-flashed 3112 cards boot OS 9 today. So the
 hardware programming model we must target has a known-good OS 9 reference implementation.
 
-### The caveat — why nobody has done the 3512 before, and why that's not silicon
+### The caveat, why nobody has done the 3512 before, and why that's not silicon
 
-Community attempts to make 3512 cards boot OS 9 have failed — but the evidence points
+Community attempts to make 3512 cards boot OS 9 have failed, but the evidence points
 to a **software lockout, not a hardware wall**:
 
 - SeriTek's OS 9 NDRV and FCode **gate on PCI device ID `0x3112`** and further check
   approved EEPROM part numbers (dosdude1 reverse-engineered and *removed* the EEPROM-ID
   check: it looked for AM29LV040 `01 4F`, MX29LV040 `C2 4F`, PM39LV040 `9D 3E`). A
-  binary keyed to `0x3112` simply won't bind to a `0x3512` card — that's a `if (id !=
+  binary keyed to `0x3112` simply won't bind to a `0x3512` card, that's a `if (id !=
   0x3112) reject`, not a missing capability.
 - The one reported "tried the 3512, won't boot" result was flashing **unmodified
-  SeriTek firmware** — i.e. hitting exactly that device-ID gate.
+  SeriTek firmware**, i.e. hitting exactly that device-ID gate.
 
 Because we're **authoring** the driver (and, for Goal 3, the FCode) against the *shared*
 register interface and keying it to `0x3512` + the `RERR_ON_DMA_ACT` quirk, we route
@@ -62,7 +62,7 @@ knowledge to the OS 9 / Open Firmware driver model rather than reusing a locked 
 
 **Residual risk** (the honest part): there could be a *second*, board-level reason the
 LaCie card misbehaves at OF time (its stock PC option-ROM, an EEPROM that's too small or
-not writable, or a PCB electrical quirk — documented even among "identical-chip" 3112
+not writable, or a PCB electrical quirk, documented even among "identical-chip" 3112
 boards). None of these are driver-logic problems; they're addressed at the FCode/flash
 stage and can only be fully characterised on the hardware.
 
@@ -71,7 +71,7 @@ stage and can only be fully characterised on the hardware.
 On a New World Mac, Open Firmware builds the device tree at `probe-all`: for each PCI
 function it looks for an expansion-ROM image with an Open Firmware code type (PCI Data
 Structure `code-type 1`). The LaCie card ships a **PC/x86 option ROM** (`code-type 0`),
-which OF should skip — synthesising a generic node from the config header instead. A bare
+which OF should skip, synthesising a generic node from the config header instead. A bare
 storage node with no matching driver is normally harmless, so a hard hang implies one of:
 
 - OF chokes evaluating/inventorying the stock option ROM (bad checksum, partial match);
@@ -92,12 +92,12 @@ hanging. **We must observe where it actually hangs before committing the FCode d
   target means Drive Setup, volume mounting, and Startup Disk all work unchanged. The NDRV
   contains a **SCSI-to-ATA translation layer (SATL)**: SCSI CDBs in → ATA taskfile/DMA
   commands out. (ATA-Interface-Module is the alternative; kept as a fallback.)
-- **Build pipeline: reuse the proven `../usb2-ehci` Retro68 flow** — `add_library(SHARED)`
+- **Build pipeline: reuse the proven `../usb2-ehci` Retro68 flow**, `add_library(SHARED)`
   → `MakePEF` → `Rez` wrap as file type `ndrv`, exporting the two data symbols
   (`TheDriverDescription`, and our HBA entry table) with a `cfrg`. That project already
   demonstrates a real PCI bus-master NDRV in Retro68 with PCILib/DriverServices imports,
   wired DMA (`NewPtrSysClear`+`LockMemory`+`GetPhysical`), and byte-swapped MMIO
-  (`lwbrx`/`stwbrx`) — a SATA HBA is the same class of driver. **This supersedes the old
+  (`lwbrx`/`stwbrx`), a SATA HBA is the same class of driver. **This supersedes the old
   "NDRVs need CodeWarrior" assumption.**
 - **FCode:** authored in Forth/FCode, tokenised, placed in the card EEPROM alongside the
   (LZSS-compressed, per SeriTek) NDRV. SeriTek's ROM layout is the template.
@@ -113,15 +113,15 @@ hanging. **We must observe where it actually hangs before committing the FCode d
 
 ## Milestone plan
 
-- **M0** — this doc + `docs/SIL3512-REGISTERS.md` register reference. ✅
-- **M1** — shape-correct NDRV binding to `pci1095,3512`, SCSI HBA skeleton (stubs).
-- **M2** — controller bring-up: PCI enable, BAR5 map, global + per-port reset, SATA
+- **M0**, this doc + `docs/SIL3512-REGISTERS.md` register reference. ✅
+- **M1**, shape-correct NDRV binding to `pci1095,3512`, SCSI HBA skeleton (stubs).
+- **M2**, controller bring-up: PCI enable, BAR5 map, global + per-port reset, SATA
   SControl/SStatus link-up, 3512 quirk.
-- **M3** — command engine (taskfile PIO + BMDMA scatter-gather) and the SCSI→ATA SATL:
+- **M3**, command engine (taskfile PIO + BMDMA scatter-gather) and the SCSI→ATA SATL:
   IDENTIFY, READ/WRITE(10), INQUIRY, READ CAPACITY → drives mount in OS 9.
-- **M4** — Open Firmware FCode: clean device claim (goal 1) + `block` device methods
+- **M4**, Open Firmware FCode: clean device claim (goal 1) + `block` device methods
   (`open`/`read-blocks`/`seek`) for boot (goal 3). Gated on hardware recon #2.
-- **M5** — hardware bring-up on the MDD + LaCie card (recon, install/flash, verify).
+- **M5**, hardware bring-up on the MDD + LaCie card (recon, install/flash, verify).
 
 ## Sources
 
